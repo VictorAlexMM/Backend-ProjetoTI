@@ -6,13 +6,15 @@ const path = require('path');
 const fs = require('fs');
 require('dotenv').config();
 const cors = require('cors');
+const PDFDocument = require('pdfkit');
+
 
 const app = express();
 const port = process.env.PORT || 4001;
 
 // Configuração do CORS
 app.use(cors({
-  origin: 'http://localhost:3000',
+  origin: 'http://pc107662:3000',
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
@@ -42,23 +44,32 @@ async function connectToDatabase() {
 }
 
 // Função para criar diretórios dinamicamente para armazenar os uploads
-const createUploadDir = (nomeProjeto) => {
+const createUploadDir = (prazo, nomeProjeto) => {
   if (!nomeProjeto) {
     throw new Error('Nome do projeto não pode ser vazio.');
   }
 
-  const now = new Date();
-  const ano = now.getFullYear();
-  const mes = String(now.getMonth() + 1).padStart(2, '0');
-  const dia = String(now.getDate()).padStart(2, '0');
+  // Converte a data do prazo para um objeto Date
+  const prazoDate = new Date(prazo);
+  if (isNaN(prazoDate)) {
+    throw new Error('Data de prazo inválida.');
+  }
+
+  const ano = prazoDate.getFullYear();
+  const mes = String(prazoDate.getMonth() + 1).padStart(2, '0'); // Mês é 0-indexed
+  const dia = String(prazoDate.getDate()).padStart(2, '0');
+  
+  // Define o caminho completo para a criação dos diretórios
   const dir = path.join(__dirname, 'uploads', ano.toString(), mes, dia, nomeProjeto);
 
+  // Cria os diretórios, se não existirem
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
   return dir;
 };
+
 
 // Filtro de arquivo para aceitar apenas PNG, JPG, PDF e DWG
 const fileFilter = (req, file, cb) => {
@@ -76,45 +87,75 @@ app.post('/projetos', (req, res) => {
   const upload = multer({
     storage: multer.diskStorage({
       destination: (req, file, cb) => {
-        const dir = createUploadDir(req.body.NomeProjeto);
-        cb(null, dir);
+        try {
+          const { NomeProjeto, Prazo } = req.body;
+
+          // Verifica se o Prazo foi informado corretamente
+          if (!Prazo) {
+            return cb(new Error('Data de prazo é obrigatória.'));
+          }
+
+          // Cria o diretório para o upload usando o prazo e nome do projeto
+          const projectDir = createUploadDir(Prazo, NomeProjeto);
+
+          cb(null, projectDir);  // Define o diretório de destino para o arquivo
+        } catch (err) {
+          return cb(new Error('Erro ao criar diretório para o upload: ' + err.message));
+        }
       },
       filename: (req, file, cb) => {
-        cb(null, file.originalname);
+        // Garante que o nome do arquivo seja o mesmo do original (sem alterações)
+        cb(null, file.originalname);  // Usa o nome original do arquivo
       }
     }),
-    fileFilter: fileFilter
-  }).single('layout');
+    fileFilter: (req, file, cb) => {
+      // Permite apenas arquivos PDF e DWG
+      const fileTypes = /pdf|dwg/;
+      const extname = fileTypes.test(path.extname(file.originalname).toLowerCase());
+      if (extname) {
+        return cb(null, true);  // Aceita o arquivo se a extensão for válida
+      } else {
+        return cb(new Error('Apenas arquivos PDF e DWG são permitidos.'));
+      }
+    }
+  }).single('Layout');  // Aceita apenas um arquivo de cada vez com o campo 'layout'
 
+  // Executa o upload
   upload(req, res, async (err) => {
     if (err) {
-      return res.status(500).send({ error: err.message });
+      console.error('Erro no upload:', err.message);
+      return res.status(500).send({ error: err.message });  // Retorna erro se houver falha
     }
 
-    const { NomeProjeto, Empresa, Responsavel, Prazo, EstimativaHoras, Saldo } = req.body;
+    const { NomeProjeto, Empresa, Responsavel, Prazo, EstimativaHoras } = req.body;
 
     // Verificação dos campos obrigatórios
     if (!NomeProjeto) {
       return res.status(400).send({ error: 'Nome do projeto é obrigatório.' });
     }
-    if (!Empresa || !Responsavel || !Prazo || !EstimativaHoras || !Saldo) {
+    if (!Empresa || !Responsavel || !Prazo || !EstimativaHoras) {
       return res.status(400).send({ error: 'Todos os campos são obrigatórios.' });
     }
 
+    // Atribui o nome do arquivo do layout se houver
     const Layout = req.file ? req.file.filename : null;
 
     try {
       const estimativaHoras = parseInt(EstimativaHoras.replace(/[^\d]/g, ''), 10);
+      
+      // Obtém a data atual
+      const currentDate = new Date();
+      
       // Inserindo o projeto no banco de dados
       const result = await sql.query`
-        INSERT INTO dbo.projeto (NomeProjeto, Empresa, Responsavel, Prazo, EstimativaHoras, Saldo, Layout)
+        INSERT INTO dbo.projeto (NomeProjeto, Empresa, Responsavel, Prazo, EstimativaHoras, Layout, DataCriacao)
         OUTPUT INSERTED.ID
-        VALUES (${NomeProjeto}, ${Empresa}, ${Responsavel}, ${Prazo}, ${estimativaHoras}, ${Saldo}, ${Layout})`;
+        VALUES (${NomeProjeto}, ${Empresa}, ${Responsavel}, ${Prazo}, ${estimativaHoras}, ${Layout}, ${currentDate})`;
 
       // Obtém o ID do projeto recém-criado
       const idProjeto = result.recordset[0].ID;
 
-      // Retorna o ID do projeto
+      // Retorna o ID do projeto criado com sucesso
       res.status(201).send({ message: 'Projeto criado com sucesso!', id: idProjeto });
 
     } catch (error) {
@@ -127,7 +168,8 @@ app.post('/projetos', (req, res) => {
 // Rota para obter todos os projetos
 app.get('/projetos', async (req, res) => {
   try {
-    const result = await sql.query`SELECT ID, NomeProjeto, Empresa, Responsavel, Prazo, EstimativaHoras, Saldo, Layout FROM dbo.projeto`;
+    // Alterado para não retornar o campo 'Saldo'
+    const result = await sql.query`SELECT ID, NomeProjeto, Empresa, Responsavel, Prazo, EstimativaHoras, Layout FROM dbo.projeto`;
     
     if (result.recordset.length === 0) {
       return res.status(404).json({ message: 'Nenhum projeto encontrado.' });
@@ -157,96 +199,483 @@ app.get('/projetos/:id', async (req, res) => {
   }
 });
 
-// Rota para registrar atividades associadas a um projeto específico
-app.post('/projetos/:id/atividades', async (req, res) => {
-  const { id: idProjeto } = req.params;
+app.post('/registroDeAtividades', (req, res) => {
+  const upload = multer({
+    storage: multer.diskStorage({
+      destination: (req, file, cb) => {
+        const { QualAtividade, DataDaAtividade } = req.body;
 
-  const parsedIdProjeto = parseInt(idProjeto, 10);
-  if (isNaN(parsedIdProjeto)) {
-      return res.status(400).json({ message: 'ID do projeto inválido.' });
-  }
+        // Verifica se os campos obrigatórios estão presentes
+        if (!QualAtividade || !DataDaAtividade) {
+          return cb(new Error('Os campos QualAtividade e DataDaAtividade são obrigatórios para o upload.'));
+        }
+
+        // Verifica se a DataDaAtividade é válida
+        const data = new Date(DataDaAtividade);
+        if (isNaN(data)) {
+          return cb(new Error('DataDaAtividade inválida.'));
+        }
+
+        // Formatação de ano, mês e dia
+        const ano = data.getFullYear();
+        const mes = String(data.getMonth() + 1).padStart(2, '0');
+        const dia = String(data.getDate()).padStart(2, '0');
+
+        // Caminho onde os arquivos serão armazenados
+        const dir = path.join(__dirname, 'uploads', 'registroDeAtividades', ano.toString(), mes, dia, QualAtividade);
+
+        // Criação do diretório de forma recursiva, caso não exista
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+
+        // Define o diretório de destino para o upload
+        cb(null, dir);
+      },
+      filename: (req, file, cb) => {
+        // Define o nome do arquivo com timestamp para garantir nome único
+        cb(null, `${Date.now()}-${file.originalname}`);
+      },
+    }),
+    fileFilter: (req, file, cb) => {
+      // Define os tipos de arquivos permitidos
+      const fileTypes = /\.(png|jpe?g|pdf|dwg)$/i;
+      const isValid = fileTypes.test(path.extname(file.originalname).toLowerCase());
+
+      if (isValid) {
+        cb(null, true);
+      } else {
+        cb(new Error('Apenas arquivos PNG, JPG, PDF e DWG são permitidos.'));
+      }
+    },
+  }).array('Anexo'); // Permite múltiplos arquivos
+
+  // Processa o upload
+  upload(req, res, async (err) => {
+    if (err) {
+      // Se ocorrer erro durante o upload (ex: tipo de arquivo inválido)
+      console.error('Erro no upload de arquivo:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+
+    // Desestruturação dos campos do formulário
+    const { QualAtividade, DataDaAtividade, QuantasPessoas, HoraInicial, HoraFinal, Responsavel, CriadoEm, ProjetoID } = req.body;
+
+    // Validação de campos obrigatórios
+    if (!QualAtividade || !DataDaAtividade || !QuantasPessoas || !HoraInicial || !HoraFinal || !Responsavel) {
+      return res.status(400).json({
+        error: 'Campos obrigatórios faltando.',
+      });
+    }
+
+    // Mapeia os arquivos para o caminho final onde foram salvos
+    const anexos = req.files.map((file) => path.join(file.destination, file.filename));
+
+    try {
+      // Inserção no banco de dados
+      const result = await sql.query`
+      INSERT INTO dbo.registroDeAtividades 
+      (QualAtividade, DataDaAtividade, QuantasPessoas, HoraInicial, HoraFinal, Responsavel, CriadoEm, ProjetoID, Anexo)
+      OUTPUT INSERTED.ID
+      VALUES (
+        ${QualAtividade}, 
+        ${DataDaAtividade}, 
+        ${QuantasPessoas}, 
+        ${HoraInicial}, 
+        ${HoraFinal}, 
+        ${Responsavel}, 
+        ${CriadoEm || null}, 
+        ${ProjetoID || null},
+        ${JSON.stringify(anexos)} -- Armazena como JSON os caminhos dos anexos
+      )`;
+
+      const idCriado = result.recordset[0]?.ID;
+
+      // Resposta de sucesso
+      res.status(201).json({ message: 'Atividade criada com sucesso', id: idCriado });
+    } catch (error) {
+      console.error('Erro ao criar atividade:', error);
+      res.status(500).json({ error: 'Erro ao criar atividade.' });
+    }
+  });
+});
+
+
+// Rota para obter arquivos do projeto com base na data de criação (Prazo)
+app.get('/uploads/projeto/:ano/:mes/:dia/:NomeProjeto/:filename', async (req, res) => {
+  const { ano, mes, dia, NomeProjeto, filename } = req.params;
 
   try {
-      // Verificar se o projeto existe
-      const projeto = await sql.query`SELECT * FROM dbo.projeto WHERE ID = ${parsedIdProjeto}`;
-      if (projeto.recordset.length === 0) {
-          return res.status(404).json({ message: 'Projeto não encontrado.' });
-      }
+    // Busca o projeto no banco para validar a data de criação (Prazo) e o nome
+    const result = await sql.query`
+      SELECT Prazo, NomeProjeto
+      FROM dbo.projeto
+      WHERE NomeProjeto = ${NomeProjeto}`;
 
-      // Validar campos obrigatórios no corpo da requisição
-      const { QualAtividade, DataDaAtividade, QuantasPessoas, HoraInicial, HoraFinal, Responsavel } = req.body;
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'Projeto não encontrado.' });
+    }
 
-      if (!QualAtividade || !DataDaAtividade || !QuantasPessoas || !HoraInicial || !HoraFinal || !Responsavel) {
-          return res.status(400).json({ message: 'Todos os campos são obrigatórios.' });
-      }
+    const projeto = result.recordset[0];
+    const dataCriacao = new Date(projeto.Prazo); // Usando Prazo para validar
+    const anoCriado = dataCriacao.getFullYear();
+    const mesCriado = String(dataCriacao.getMonth() + 1).padStart(2, '0');
+    const diaCriado = String(dataCriacao.getDate()).padStart(2, '0');
 
-      const dataAtividade = new Date(DataDaAtividade);
+    // Verifica se a data de criação (Prazo) corresponde aos parâmetros recebidos
+    if (ano !== String(anoCriado) || mes !== mesCriado || dia !== diaCriado) {
+      return res.status(400).json({ error: 'Data de criação (Prazo) não corresponde.' });
+    }
 
-      // Validar dados adicionais
-      if (new Date(`1970-01-01T${HoraInicial}:00`) >= new Date(`1970-01-01T${HoraFinal}:00`)) {
-          return res.status(400).json({ message: 'HoraInicial deve ser menor que HoraFinal.' });
-      }
+    // Construir o caminho completo do arquivo
+    const filePath = path.join(__dirname, 'uploads', ano, mes, dia, NomeProjeto, filename);
 
-      if (isNaN(QuantasPessoas) || QuantasPessoas <= 0) {
-          return res.status(400).json({ message: 'QuantasPessoas deve ser um número maior que 0.' });
-      }
+    console.log(`Tentando acessar o arquivo: ${filePath}`);
 
-      // Configuração do upload com Multer
-      const upload = multer({
-          storage: multer.diskStorage({
-              destination: (req, file, cb) => {
-                  const dir = createUploadDir(projeto.recordset[0].NomeProjeto || `Projeto_${parsedIdProjeto}`);
-                  cb(null, dir);
-              },
-              filename: (req, file, cb) => {
-                  const dataFormatada = `${dataAtividade.getFullYear()}-${String(dataAtividade.getMonth() + 1).padStart(2, '0')}-${String(dataAtividade.getDate()).padStart(2, '0')}`;
-                  const nomeArquivo = `${dataFormatada}_${file.originalname}`;
-                  cb(null, nomeArquivo);
-              }
-          }),
-          fileFilter: fileFilter
-      }).single('anexo');
+    // Verifica se o arquivo existe
+    await fs.promises.access(filePath);
 
-      // Executar upload do arquivo
-      upload(req, res, async (err) => {
-          if (err) {
-              return res.status(500).json({ message: 'Erro ao enviar o arquivo.', error: err.message });
-          }
+    // Detectar o tipo de conteúdo (MIME type)
+    const extname = path.extname(filename).toLowerCase();
+    const mimeTypes = {
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.pdf': 'application/pdf',
+      '.dwg': 'application/vnd.dwg',
+    };
 
-          const Anexo = req.file ? req.file.filename : null;
+    const contentType = mimeTypes[extname] || 'application/octet-stream';
 
-          // Inserir atividade no banco de dados
-          try {
-              const pool = await sql.connect(dbConfig);
-              const request = pool.request();
-              request.input('ProjectID', sql.Int, parsedIdProjeto);
-              request.input('QualAtividade', sql.NVarChar, QualAtividade);
-              request.input('DataDaAtividade', sql.Date, dataAtividade);
-              request.input('QuantasPessoas', sql.Int, QuantasPessoas);
-              request.input('HoraInicial', sql.Time, HoraInicial);
-              request.input('HoraFinal', sql.Time, HoraFinal);
-              request.input('Responsavel', sql.NVarChar, Responsavel);
-              request.input('Anexo', sql.NVarChar, Anexo);
-
-              const result = await request.query(`
-                  INSERT INTO dbo.registroDeAtividade (ProjectID, QualAtividade, DataDaAtividade, QuantasPessoas, HoraInicial, HoraFinal, Responsavel, Anexo)
-                  OUTPUT INSERTED.ID
-                  VALUES (@ProjectID, @QualAtividade, @DataDaAtividade, @QuantasPessoas, @HoraInicial, @HoraFinal, @Responsavel, @Anexo);
-              `);
-
-              const idAtividade = result.recordset[0].ID;
-
-              // Resposta de sucesso
-              res.status(201).json({ message: 'Atividade registrada com sucesso!', id: idAtividade });
-          } catch (dbError) {
-              console.error('Erro ao registrar atividade:', dbError.message);
-              res.status(500).json({ message: 'Erro ao registrar atividade.', error: dbError.message });
-          }
-      });
-  } catch (err) {
-      console.error('Erro ao verificar projeto:', err.message);
-      res.status(500).json({ message: 'Erro ao verificar projeto.', error: err.message });
+    // Enviar o arquivo
+    res.setHeader('Content-Type', contentType);
+    res.sendFile(filePath);
+    console.log(`Arquivo enviado com sucesso: ${filePath}`);
+  } catch (error) {
+    console.error(`Erro ao acessar o arquivo ou buscar projeto:`, error.message);
+    res.status(500).json({ error: 'Erro interno no servidor.' });
   }
+});
+
+app.get('/uploads/registroDeAtividades/:ano/:mes/:dia/:qualAtividade/:filename', async (req, res) => {
+  const { ano, mes, dia, qualAtividade, filename } = req.params;
+
+  // Construir o caminho completo do arquivo com base nos parâmetros
+  const filePath = path.join(__dirname, 'uploads', 'registroDeAtividades', ano, mes, dia, qualAtividade, filename);
+
+  try {
+    // Verifica se o arquivo existe
+    await fs.promises.access(filePath);
+
+    // Detecta o tipo de arquivo para definir o Content-Type
+    const extname = path.extname(filename).toLowerCase();
+    let contentType = 'application/octet-stream'; // Default
+
+    // Definir o tipo MIME com base na extensão
+    if (extname === '.jpg' || extname === '.jpeg') {
+      contentType = 'image/jpeg';
+    } else if (extname === '.png') {
+      contentType = 'image/png';
+    } else if (extname === '.pdf') {
+      contentType = 'application/pdf';
+    } else if (extname === '.dwg') {
+      contentType = 'application/vnd.dwg';
+    }
+
+    // Enviar o arquivo com o tipo de conteúdo adequado
+    res.setHeader('Content-Type', contentType);
+    res.sendFile(filePath);
+  } catch (error) {
+    // Se o arquivo não for encontrado, retornar um erro 404
+    res.status(404).json({ error: 'Arquivo não encontrado.' });
+  }
+});
+
+// Rota para obter registro de atividades com base no ProjetoID ou ID específico
+app.get('/registroDeAtividades/projeto/:projetoId', async (req, res) => {
+  const { projetoId } = req.params;
+
+  try {
+    // Valida se o projetoId é um número
+    if (!projetoId || isNaN(projetoId)) {
+      return res.status(400).json({ message: 'ID do projeto inválido.' });
+    }
+
+    // Consulta ao banco de dados para buscar pelo ProjetoID ou ID específico
+    const result = await sql.query`
+      SELECT a.*
+      FROM dbo.registroDeAtividades a
+      WHERE a.ID = ${projetoId} OR a.ProjetoID = ${projetoId}`;
+
+    // Verifica se houve algum registro encontrado
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ message: 'Nenhuma atividade encontrada para este projeto ou ID.' });
+    }
+
+    // Mapeia os registros encontrados para incluir a URL do arquivo
+    const attachments = result.recordset.map((attachment) => {
+      const { Anexo, QualAtividade, DataDaAtividade } = attachment;
+
+      // Valida campos necessários
+      if (!Anexo || !QualAtividade || !DataDaAtividade) {
+        console.error('Campos ausentes no registro:', attachment);
+        return attachment;
+      }
+
+      // Converte a DataDaAtividade para criar o caminho do arquivo
+      const dataAtividade = new Date(DataDaAtividade);
+      if (isNaN(dataAtividade)) {
+        console.error('DataDaAtividade inválida:', DataDaAtividade);
+        return attachment; // Retorna o registro sem a URL se a data for inválida
+      }
+
+      const ano = dataAtividade.getFullYear();
+      const mes = String(dataAtividade.getMonth() + 1).padStart(2, '0');
+      const dia = String(dataAtividade.getDate()).padStart(2, '0');
+      const filename = path.basename(Anexo);
+
+      // Gera a URL do arquivo
+      const fileUrl = `http://pc107662:4001/uploads/registroDeAtividades/${ano}/${mes}/${dia}/${QualAtividade}/${filename}`;
+
+      // Retorna o registro com a URL do arquivo anexada
+      return { ...attachment, fileUrl };
+    });
+
+    // Retorna os registros com as URLs geradas
+    res.status(200).json(attachments);
+  } catch (error) {
+    console.error('Erro ao buscar registros de atividades:', error.message);
+    res.status(500).json({ error: 'Erro ao buscar registros de atividades.' });
+  }
+});
+
+// Rota para obter anexos com base no ID da atividade
+app.get('/registroDeAtividades/anexos/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Valida se o id é um número
+    if (!id || isNaN(id)) {
+      return res.status(400).json({ message: 'ID inválido.' });
+    }
+
+    // Consulta ao banco de dados para buscar os anexos pelo ID específico
+    const result = await sql.query`
+      SELECT a.Anexo, a.QualAtividade, a.DataDaAtividade
+      FROM dbo.registroDeAtividades a
+      WHERE a.ID = ${id}`;
+
+    // Verifica se houve algum registro encontrado
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ message: 'Nenhum anexo encontrado para este ID.' });
+    }
+
+    // Mapeia os registros encontrados para incluir as URLs dos arquivos
+    const activityWithAttachments = result.recordset.map((activity) => {
+      const { Anexo, QualAtividade, DataDaAtividade } = activity;
+
+      // Valida campos necessários
+      if (!Anexo || !QualAtividade || !DataDaAtividade) {
+        console.error('Campos ausentes no registro:', activity);
+        return activity; // Retorna a atividade sem a URL se campos necessários estiverem ausentes
+      }
+
+      // Converte a DataDaAtividade para criar o caminho do arquivo
+      const dataAtividade = new Date(DataDaAtividade);
+      if (isNaN(dataAtividade)) {
+        console.error('DataDaAtividade inválida:', DataDaAtividade);
+        return activity; // Retorna a atividade sem a URL se a data for inválida
+      }
+
+      const ano = dataAtividade.getFullYear();
+      const mes = String(dataAtividade.getMonth() + 1).padStart(2, '0');
+      const dia = String(dataAtividade.getDate()).padStart(2, '0');
+
+      // Verifica se o campo Anexo é uma string de array JSON e converte para um array real
+      let anexos = [];
+      try {
+        anexos = JSON.parse(Anexo); // Converte a string de array JSON para um array real
+      } catch (error) {
+        console.error('Erro ao converter Anexo para array:', error);
+      }
+
+      // Gera as URLs para cada anexo
+      const anexosComUrl = anexos.map((filePath) => {
+        const filename = path.basename(filePath.trim());
+
+        // Corrige o caminho absoluto do arquivo para um caminho relativo
+        const fileUrl = `http://pc107662:4001/uploads/registroDeAtividades/${ano}/${mes}/${dia}/${QualAtividade}/${filename}`;
+
+        return { nome: filename, url: fileUrl };
+      });
+
+      // Retorna o registro com os anexos e URLs gerados
+      return { anexos: anexosComUrl };
+    });
+
+    // Retorna os anexos com as URLs geradas
+    res.status(200).json(activityWithAttachments[0]); // Como temos um único ID, retornamos o primeiro item
+  } catch (error) {
+    console.error('Erro ao buscar anexos:', error.message);
+    res.status(500).json({ error: 'Erro ao buscar anexos.' });
+  }
+});
+
+app.get('/gerar-pdf/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Busca os detalhes do projeto
+    const projectResult = await sql.query`
+      SELECT ID, NomeProjeto, Empresa, Responsavel, Prazo, EstimativaHoras
+      FROM dbo.projeto
+      WHERE ID = ${id}
+    `;
+
+    if (projectResult.recordset.length === 0) {
+      return res.status(404).json({ message: 'Projeto não encontrado.' });
+    }
+
+    const projeto = projectResult.recordset[0];
+
+    // Busca os registros de atividades relacionados ao projeto
+    const activityResult = await sql.query`
+      SELECT QualAtividade, DataDaAtividade, QuantasPessoas, HoraInicial, HoraFinal, Responsavel, Anexo
+      FROM dbo.registroDeAtividades
+      WHERE ProjetoID = ${id}
+    `;
+
+    const atividades = activityResult.recordset;
+
+    // Configurações para o PDF
+    const pdfPath = path.join(__dirname, 'uploads', 'PDFs');
+    if (!fs.existsSync(pdfPath)) fs.mkdirSync(pdfPath, { recursive: true });
+
+    const fileName = `${projeto.NomeProjeto.replace(/\s+/g, '_')}.pdf`;
+
+    const doc = new PDFDocument({ layout: 'landscape', size: 'A4', margin: 30 });
+
+    // Envia o PDF diretamente como resposta (sem salvar no servidor)
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename="' + fileName + '"');
+
+    // Stream do PDF para a resposta HTTP
+    doc.pipe(res);
+
+    // Cabeçalho do projeto
+    doc.fontSize(20).text('Detalhes do Projeto', { align: 'center' }).moveDown();
+    doc.fontSize(12).text(`Nome do Projeto: ${projeto.NomeProjeto}`);
+    doc.text(`Empresa: ${projeto.Empresa}`);
+    doc.text(`Responsável: ${projeto.Responsavel}`);
+    doc.text(`Prazo: ${new Date(projeto.Prazo).toLocaleString()}`);
+    doc.text(`Estimativa de Horas: ${projeto.EstimativaHoras}`).moveDown();
+
+    // Tabela de registros de atividades
+    doc.fontSize(14).text('Registros de Atividades', { underline: true }).moveDown();
+
+    // Configuração de largura das colunas para caber corretamente
+    const columnWidths = [120, 120, 80, 80, 80, 120, 150]; // Ajustadas para caber
+    const startX = 30;
+    let currentY = doc.y + 20;
+
+    const drawCell = (text, x, y, width, height) => {
+      doc.rect(x, y, width, height).stroke();
+      doc.text(text, x + 5, y + 5, { width: width - 10, height: height - 10, ellipsis: true });
+    };
+
+    const rowHeight = 25;
+
+    // Cabeçalho da tabela
+    const headers = ['Atividade', 'Data', 'Pessoas', 'Hora Inicial', 'Hora Final', 'Responsável', 'Anexo'];
+    headers.forEach((header, i) => {
+      drawCell(header, startX + columnWidths.slice(0, i).reduce((a, b) => a + b, 0), currentY, columnWidths[i], rowHeight);
+    });
+    currentY += rowHeight;
+
+    // Linhas da tabela com imagens anexadas
+    atividades.forEach((atividade) => {
+      const values = [
+        atividade.QualAtividade,
+        new Date(atividade.DataDaAtividade).toLocaleDateString(),
+        atividade.QuantasPessoas || 'N/A',
+        atividade.HoraInicial ? new Date(atividade.HoraInicial).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'N/A',
+        atividade.HoraFinal ? new Date(atividade.HoraFinal).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'N/A',
+        atividade.Responsavel || 'N/A',
+        atividade.Anexo ? 'Ver abaixo' : 'Sem Anexo',
+      ];
+
+      values.forEach((value, i) => {
+        drawCell(value, startX + columnWidths.slice(0, i).reduce((a, b) => a + b, 0), currentY, columnWidths[i], rowHeight);
+      });
+      currentY += rowHeight;
+
+      // Adiciona a imagem do anexo (caso seja JPG ou PNG)
+      if (atividade.Anexo && /\.(jpg|jpeg|png)$/i.test(atividade.Anexo)) {
+        const imagePath = path.resolve(__dirname, 'uploads', atividade.Anexo);
+        if (fs.existsSync(imagePath)) {
+          const imageHeight = 80; // Altura da imagem
+          const imageWidth = 100; // Largura da imagem
+
+          // Verifica se há espaço suficiente para renderizar a imagem na mesma página
+          if (currentY + imageHeight > doc.page.height) {
+            doc.addPage();
+            currentY = doc.y; // Reseta a posição Y para o topo da nova página
+          }
+
+          // Adiciona a imagem
+          doc.image(imagePath, startX, currentY, { width: imageWidth, height: imageHeight });
+          currentY += imageHeight + 10; // Incrementa a posição Y para evitar sobreposição
+        }
+      }
+    });
+
+    // Finaliza o documento
+    doc.end();
+  } catch (error) {
+    console.error('Erro ao gerar o PDF:', error.message);
+    res.status(500).json({ error: 'Erro ao gerar o PDF.' });
+  }
+});
+
+// Rota para preencher a observação de um projeto
+app.post('/projeto/:id/observacao', (req, res) => {
+  const projectID = req.params.id;
+  const observacao = req.body.observacao;
+
+  if (!observacao) {
+    return res.status(400).json({ message: 'Observação é obrigatória' });
+  }
+
+  const query = 'UPDATE dbo.projeto SET observacao = ? WHERE id = ?';
+  db.query(query, [observacao, projectID], (err, result) => {
+    if (err) {
+      return res.status(500).json({ message: 'Erro ao atualizar a observação', error: err });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Projeto não encontrado' });
+    }
+
+    res.status(200).json({ message: 'Observação atualizada com sucesso' });
+  });
+});
+
+// Rota para obter a observação de um projeto
+app.get('/projeto/:id/observacao', (req, res) => {
+  const projectID = req.params.id;
+
+  const query = 'SELECT observacao FROM dbo.projeto WHERE id = ?';
+  db.query(query, [projectID], (err, result) => {
+    if (err) {
+      return res.status(500).json({ message: 'Erro ao buscar observação', error: err });
+    }
+
+    if (result.length === 0) {
+      return res.status(404).json({ message: 'Projeto não encontrado' });
+    }
+
+    res.status(200).json({ observacao: result[0].observacao });
+  });
 });
 
 // Iniciar o servidor e a conexão com o banco
