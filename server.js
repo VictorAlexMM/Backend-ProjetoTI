@@ -14,8 +14,8 @@ const port = process.env.PORT || 4001;
 
 // Configuração do CORS
 app.use(cors({
-  origin: 'http://pc107662:3000',
-  methods: ['GET', 'POST'],
+  origin: '*',
+  methods: ['GET', 'POST' ,'PUT'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
@@ -81,6 +81,17 @@ const fileFilter = (req, file, cb) => {
     cb(new Error('Apenas arquivos PNG, JPG, PDF e DWG são permitidos.'));
   }
 };
+
+// Cria o pool de conexões global
+const poolPromise = new sql.ConnectionPool(dbConfig)
+  .connect()
+  .then((pool) => {
+    console.log('Conectado ao banco de dados SQL Server');
+    return pool;
+  })
+  .catch((err) => {
+    console.error('Erro ao conectar ao banco de dados:', err);
+  });
 
 // Rota para adicionar um novo projeto (com upload de layout)
 app.post('/projetos', (req, res) => {
@@ -262,9 +273,9 @@ app.post('/registroDeAtividades', (req, res) => {
     const { QualAtividade, DataDaAtividade, QuantasPessoas, HoraInicial, HoraFinal, Responsavel, CriadoEm, ProjetoID } = req.body;
 
     // Validação de campos obrigatórios
-    if (!QualAtividade || !DataDaAtividade || !QuantasPessoas || !HoraInicial || !HoraFinal || !Responsavel) {
+    if (!QualAtividade || !DataDaAtividade || !Responsavel) {
       return res.status(400).json({
-        error: 'Campos obrigatórios faltando.',
+        error: 'Campos obrigatórios faltando: QualAtividade, DataDaAtividade ou Responsavel.',
       });
     }
 
@@ -272,6 +283,10 @@ app.post('/registroDeAtividades', (req, res) => {
     const anexos = req.files.map((file) => path.join(file.destination, file.filename));
 
     try {
+      // Define valores nulos para HoraInicial e HoraFinal, se não forem fornecidos
+      const horaInicial = HoraInicial || null;
+      const horaFinal = HoraFinal || null;
+
       // Inserção no banco de dados
       const result = await sql.query`
       INSERT INTO dbo.registroDeAtividades 
@@ -280,9 +295,9 @@ app.post('/registroDeAtividades', (req, res) => {
       VALUES (
         ${QualAtividade}, 
         ${DataDaAtividade}, 
-        ${QuantasPessoas}, 
-        ${HoraInicial}, 
-        ${HoraFinal}, 
+        ${QuantasPessoas || null}, 
+        ${horaInicial}, -- Usar null se não fornecido
+        ${horaFinal},   -- Usar null se não fornecido
         ${Responsavel}, 
         ${CriadoEm || null}, 
         ${ProjetoID || null},
@@ -637,46 +652,57 @@ app.get('/gerar-pdf/:id', async (req, res) => {
   }
 });
 
-// Rota para preencher a observação de um projeto
-app.post('/projeto/:id/observacao', (req, res) => {
-  const projectID = req.params.id;
-  const observacao = req.body.observacao;
+// Endpoint para atualizar status e observação
+app.put('/api/projetos/:id', async (req, res) => {
+  const { id } = req.params;
+  const { status, observacao } = req.body;
 
-  if (!observacao) {
-    return res.status(400).json({ message: 'Observação é obrigatória' });
+  try {
+    const pool = await poolPromise; // Certifique-se de usar o pool criado acima
+
+    // Atualiza o status e a observação no banco de dados
+    await pool.request()
+      .input('id', sql.Int, id)
+      .input('status', sql.NVarChar, status)
+      .input('observacao', sql.NVarChar, observacao)
+      .query(`
+        UPDATE projeto
+        SET Status = @status, observacao = @observacao
+        WHERE id = @id
+      `);
+
+    res.status(200).json({ message: 'Projeto atualizado com sucesso' });
+  } catch (error) {
+    console.error('Erro ao atualizar status:', error);
+    res.status(500).json({ error: 'Erro ao atualizar status do projeto' });
   }
-
-  const query = 'UPDATE dbo.projeto SET observacao = ? WHERE id = ?';
-  db.query(query, [observacao, projectID], (err, result) => {
-    if (err) {
-      return res.status(500).json({ message: 'Erro ao atualizar a observação', error: err });
-    }
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'Projeto não encontrado' });
-    }
-
-    res.status(200).json({ message: 'Observação atualizada com sucesso' });
-  });
 });
 
-// Rota para obter a observação de um projeto
-app.get('/projeto/:id/observacao', (req, res) => {
-  const projectID = req.params.id;
+// Endpoint para obter observação de um projeto
+app.get('/api/projetos/:id/observacao', async (req, res) => {
+  const { id } = req.params;
 
-  const query = 'SELECT observacao FROM dbo.projeto WHERE id = ?';
-  db.query(query, [projectID], (err, result) => {
-    if (err) {
-      return res.status(500).json({ message: 'Erro ao buscar observação', error: err });
+  try {
+    const pool = await sql.connect(dbConfig);
+    const result = await pool.request()
+      .input('id', sql.Int, id)
+      .query(`
+        SELECT Observacao
+        FROM projeto
+        WHERE id = @id
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'Projeto não encontrado' });
     }
 
-    if (result.length === 0) {
-      return res.status(404).json({ message: 'Projeto não encontrado' });
-    }
-
-    res.status(200).json({ observacao: result[0].observacao });
-  });
+    res.status(200).json({ observacao: result.recordset[0].observacao });
+  } catch (error) {
+    console.error('Erro ao buscar observação:', error);
+    res.status(500).json({ error: 'Erro ao buscar observação do projeto' });
+  }
 });
+
 
 // Iniciar o servidor e a conexão com o banco
 connectToDatabase().then(() => {
