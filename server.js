@@ -3,6 +3,7 @@ const express = require('express');
 const sql = require('mssql');
 const multer = require('multer');
 const path = require('path');
+const { Sequelize, DataTypes } = require('sequelize');
 const fs = require('fs');
 require('dotenv').config();
 const cors = require('cors');
@@ -703,6 +704,96 @@ app.get('/api/projetos/:id/observacao', async (req, res) => {
   }
 });
 
+// Configuração do Sequelize
+const sequelize = new Sequelize(process.env.DB_DATABASE, process.env.DB_USER, process.env.DB_PASSWORD, {
+  host: process.env.DB_SERVER,
+  dialect: 'mssql',
+});
+
+// Definição do modelo PontoFotos
+const PontoFotos = sequelize.define('ponto_fotos', {
+  nome: { type: DataTypes.STRING, allowNull: false },
+  projeto: { type: DataTypes.STRING, allowNull: false },
+  data: { type: DataTypes.DATEONLY, allowNull: false },
+  horaInicial: { type: DataTypes.TIME, allowNull: false },
+  horaFinal: { type: DataTypes.TIME, allowNull: false },
+}, {
+  timestamps: false, // Não cria automaticamente as colunas createdAt e updatedAt
+});
+
+// Diretório onde os arquivos estão armazenados
+const directoryPath = '\\\\mao-s039\\c$\\rec_facial\\registros';
+
+// Rota principal para processar os arquivos e salvar no banco de dados
+app.get('/api/ponto_fotos', async (req, res) => {
+  try {
+    if (!fs.existsSync(directoryPath)) {
+      throw new Error(`O diretório especificado não existe: ${directoryPath}`);
+    }
+
+    const files = fs.readdirSync(directoryPath);
+
+    const registros = files.map((file) => {
+      const match = file.match(/^(.+?)_(.+?)_(\d{4})\.(\d{2})\.(\d{2})\.(\d{2})\.(\d{2})\.(\d{2})\.jpg$/);
+      if (!match) {
+        console.warn(`Arquivo fora do padrão: ${file}`);
+        return null;
+      }
+    
+      let nome = match[1]; // Primeiro segmento do nome
+      let restante = match[2]; // Combinação de sobrenome e projeto
+    
+      // Identificar o último underscore para separar projeto
+      const lastUnderscoreIndex = restante.lastIndexOf('_');
+      if (lastUnderscoreIndex !== -1) {
+        nome = `${nome} ${restante.slice(0, lastUnderscoreIndex).replace(/_/g, ' ')}`; // Adicionar sobrenome ao nome
+        restante = restante.slice(lastUnderscoreIndex + 1); // Parte final é o projeto
+      }
+    
+      const projeto = restante; // Último segmento é o projeto
+      const data = `${match[3]}-${match[4]}-${match[5]}`; // Data formatada como YYYY-MM-DD
+      const hora = `${match[6]}:${match[7]}:${match[8]}`; // Hora formatada como HH:mm:ss
+    
+      return { nome, projeto, data, hora };
+    }).filter(Boolean); // Remove valores nulos
+
+    for (const registro of registros) {
+      const { nome, projeto, data, hora } = registro;
+
+      console.log(`Processando: Nome=${nome}, Projeto=${projeto}, Data=${data}, Hora=${hora}`);
+
+      const existingRecords = await PontoFotos.findAll({ where: { nome, projeto, data } });
+
+      if (existingRecords.length > 0) {
+        // Ordena corretamente as horas, garantindo que horaInicial seja a menor e horaFinal a maior
+        const horas = existingRecords.map((rec) => rec.horaInicial).concat(hora).sort((a, b) => a.localeCompare(b));
+        const horaInicial = horas[0]; // A primeira hora após a ordenação (mais cedo)
+        const horaFinal = horas[horas.length - 1]; // A última hora após a ordenação (mais tarde)
+
+        // Certifique-se de que os valores são strings formatadas corretamente
+        const formatTime = time => (typeof time === 'string' ? time : time.toISOString().split('T')[1].slice(0, 8));        
+
+        // Verifique se a hora final é sempre maior que a hora inicial
+        const updatedHoraInicial = horaInicial < horaFinal ? horaInicial : horaFinal;
+        const updatedHoraFinal = horaFinal > horaInicial ? horaFinal : horaInicial;
+
+        console.log(`Atualizando registro: Nome=${nome}, Projeto=${projeto}, Hora Inicial=${updatedHoraInicial}, Hora Final=${updatedHoraFinal}`);
+        await existingRecords[0].update({
+          horaInicial: formatTime(updatedHoraInicial),
+          horaFinal: formatTime(updatedHoraFinal),
+        });
+      } else {
+ console.log(`Criando novo registro: Nome=${nome}, Projeto=${projeto}, Data=${data}, Hora=${hora}`);
+        await PontoFotos.create({ nome, projeto, data, horaInicial: hora, horaFinal: hora });
+      }
+    }
+
+    res.json({ message: 'Arquivos processados com sucesso.' });
+  } catch (error) {
+    console.error('Erro ao processar arquivos:', error);
+    res.status(500).json({ error: 'Erro ao processar arquivos.' });
+  }
+});
 
 // Iniciar o servidor e a conexão com o banco
 connectToDatabase().then(() => {
