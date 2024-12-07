@@ -94,6 +94,63 @@ const poolPromise = new sql.ConnectionPool(dbConfig)
     console.error('Erro ao conectar ao banco de dados:', err);
   });
 
+  // Função para validar e formatar a hora para o SQL Server
+function formatTimeForSQL(timeString) {
+  const timeParts = timeString.split(':');
+  if (timeParts.length !== 3) {
+      throw new Error(`Formato de hora inválido: ${timeString}. Use HH:mm:ss.`);
+  }
+
+  let [hours, minutes, seconds] = timeParts.map(part => parseInt(part, 10));
+
+  if (
+      isNaN(hours) || isNaN(minutes) || isNaN(seconds) ||
+      hours < 0 || hours > 23 ||
+      minutes < 0 || minutes > 59 ||
+      seconds < 0 || seconds > 59
+  ) {
+      throw new Error(`Hora inválida: ${timeString}. Use HH:mm:ss.`);
+  }
+
+  // Garantir que as partes tenham dois dígitos
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+// Função para formatar a data
+function formatDate(dateString) {
+const date = new Date(dateString);
+
+if (isNaN(date.getTime())) {
+    return 'Data Inválida';
+}
+
+return date.toLocaleDateString('pt-BR', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+});
+}
+// Função para formatar a hora no formato HH:MM:SS
+function formatTime(timeString) {
+if (!timeString || typeof timeString !== 'string') {
+    return 'Hora Inválida';
+}
+
+// Verificar se a hora está no formato correto (HH:MM:SS)
+const timeParts = timeString.split(':');
+if (timeParts.length !== 3) {
+    return 'Hora Inválida';
+}
+
+let [hours, minutes, seconds] = timeParts;
+
+// Garantir que horas, minutos e segundos estão sempre com dois dígitos
+hours = hours.padStart(2, '0');
+minutes = minutes.padStart(2, '0');
+
+return `${hours}:${minutes}:${seconds}`;
+}
+
 // Rota para adicionar um novo projeto (com upload de layout)
 app.post('/projetos', (req, res) => {
   const upload = multer({
@@ -717,6 +774,7 @@ const PontoFotos = sequelize.define('ponto_fotos', {
   data: { type: DataTypes.DATEONLY, allowNull: false },
   horaInicial: { type: DataTypes.TIME, allowNull: false },
   horaFinal: { type: DataTypes.TIME, allowNull: false },
+  anexo: { type: DataTypes.STRING, allowNull: true }, // Coluna para o nome da foto
 }, {
   timestamps: false, // Não cria automaticamente as colunas createdAt e updatedAt
 });
@@ -739,52 +797,66 @@ app.get('/api/ponto_fotos', async (req, res) => {
         console.warn(`Arquivo fora do padrão: ${file}`);
         return null;
       }
-    
+
       let nome = match[1]; // Primeiro segmento do nome
       let restante = match[2]; // Combinação de sobrenome e projeto
-    
+
       // Identificar o último underscore para separar projeto
       const lastUnderscoreIndex = restante.lastIndexOf('_');
       if (lastUnderscoreIndex !== -1) {
         nome = `${nome} ${restante.slice(0, lastUnderscoreIndex).replace(/_/g, ' ')}`; // Adicionar sobrenome ao nome
         restante = restante.slice(lastUnderscoreIndex + 1); // Parte final é o projeto
       }
-    
+
       const projeto = restante; // Último segmento é o projeto
       const data = `${match[3]}-${match[4]}-${match[5]}`; // Data formatada como YYYY-MM-DD
       const hora = `${match[6]}:${match[7]}:${match[8]}`; // Hora formatada como HH:mm:ss
-    
-      return { nome, projeto, data, hora };
+      const anexo = file; // Nome do arquivo para a coluna Anexo
+
+      return { nome, projeto, data, hora, anexo };
     }).filter(Boolean); // Remove valores nulos
 
     for (const registro of registros) {
-      const { nome, projeto, data, hora } = registro;
+      const { nome, projeto, data, hora, anexo } = registro;
 
-      console.log(`Processando: Nome=${nome}, Projeto=${projeto}, Data=${data}, Hora=${hora}`);
+      if (!anexo) {
+        console.error("Arquivo fora do padrão ou não definido:", registro);
+        continue; // Pule arquivos sem nome válido.
+      }
+
+      console.log(`Processando: Nome=${nome}, Projeto=${projeto}, Data=${data}, Hora=${hora}, Anexo=${anexo}`);
 
       const existingRecords = await PontoFotos.findAll({ where: { nome, projeto, data } });
 
+      const formatTime = (time) => (typeof time === 'string' ? time : time.toISOString().split('T')[1].slice(0, 8));
+
       if (existingRecords.length > 0) {
-        // Ordena corretamente as horas, garantindo que horaInicial seja a menor e horaFinal a maior
         const horas = existingRecords.map((rec) => rec.horaInicial).concat(hora).sort((a, b) => a.localeCompare(b));
-        const horaInicial = horas[0]; // A primeira hora após a ordenação (mais cedo)
-        const horaFinal = horas[horas.length - 1]; // A última hora após a ordenação (mais tarde)
+        const horaInicial = formatTime(horas[0]);
+        const horaFinal = formatTime(horas[horas.length - 1]);
 
-        // Certifique-se de que os valores são strings formatadas corretamente
-        const formatTime = time => (typeof time === 'string' ? time : time.toISOString().split('T')[1].slice(0, 8));        
+        // Concatenar os anexos existentes com o novo arquivo
+        const novosAnexos = existingRecords[0].anexo ? existingRecords[0].anexo.split(',').concat(anexo) : [anexo];
+        const anexoAtualizado = [...new Set(novosAnexos)].join(', '); // Remove duplicatas e entradas vazias
 
-        // Verifique se a hora final é sempre maior que a hora inicial
-        const updatedHoraInicial = horaInicial < horaFinal ? horaInicial : horaFinal;
-        const updatedHoraFinal = horaFinal > horaInicial ? horaFinal : horaInicial;
+        console.log(`Tamanho do valor em Anexo: ${anexoAtualizado.length}`);
 
-        console.log(`Atualizando registro: Nome=${nome}, Projeto=${projeto}, Hora Inicial=${updatedHoraInicial}, Hora Final=${updatedHoraFinal}`);
+        // Validação do tamanho do campo
+        const LIMITE_DE_CARACTERES = 500; // Ajuste conforme o tamanho definido no banco
+        if (anexoAtualizado.length > LIMITE_DE_CARACTERES) {
+          console.error('Erro: O valor excede o limite permitido para a coluna Anexo.');
+          continue;
+        }
+
+        console.log(`Atualizando registro: Nome=${nome}, Projeto=${projeto}, Hora Inicial=${horaInicial}, Hora Final=${horaFinal}, Anexos=${anexoAtualizado}`);
         await existingRecords[0].update({
-          horaInicial: formatTime(updatedHoraInicial),
-          horaFinal: formatTime(updatedHoraFinal),
+          horaInicial,
+          horaFinal,
+          anexo: anexoAtualizado,
         });
       } else {
- console.log(`Criando novo registro: Nome=${nome}, Projeto=${projeto}, Data=${data}, Hora=${hora}`);
-        await PontoFotos.create({ nome, projeto, data, horaInicial: hora, horaFinal: hora });
+        console.log(`Criando novo registro: Nome=${nome}, Projeto=${projeto}, Data=${data}, Hora=${hora}, Anexo=${anexo}`);
+        await PontoFotos.create({ nome, projeto, data, horaInicial: hora, horaFinal: hora, anexo });
       }
     }
 
@@ -794,6 +866,149 @@ app.get('/api/ponto_fotos', async (req, res) => {
     res.status(500).json({ error: 'Erro ao processar arquivos.' });
   }
 });
+
+// Endpoint para buscar informações da tabela "pontos_fotos"
+app.get('/api/buscar-ponto', async (req, res) => {
+  try {
+      // Conectar ao banco de dados
+      const pool = await sql.connect(dbConfig);
+
+      // Query para buscar os dados
+      const result = await pool.request().query(
+          `SELECT Nome, Data, horaInicial, horaFinal, Projeto, Anexo FROM ponto_fotos`
+      );
+
+      // Função para formatar a hora no padrão HH:mm:ss
+      const formatTime = (time) => {
+          if (time instanceof Date) {
+              return time.toISOString().split('T')[1].slice(0, 8); // Extrai HH:mm:ss de uma data completa
+          }
+          return time; // Assume que já está no formato HH:mm:ss se não for Date
+      };
+
+      // Função para formatar a data no padrão DD-MM-YYYY
+      const formatDate = (date) => {
+          if (date instanceof Date) {
+              const [year, month, day] = date.toISOString().split('T')[0].split('-');
+              return `${day}-${month}-${year}`; // Reorganiza para DD-MM-YYYY
+          }
+          if (typeof date === 'string' && date.includes('-')) {
+              const [year, month, day] = date.split('-');
+              return `${day}-${month}-${year}`; // Reorganiza para DD-MM-YYYY
+          }
+          return date; // Assume que já está no formato desejado se não for manipulável
+      };
+
+      // Verificar se existem registros no dbo.projeto com nomes correspondentes na tabela ponto_fotos
+      const projetoResult = await pool.request().query(
+          `SELECT DISTINCT p.Projeto
+           FROM ponto_fotos p
+           WHERE EXISTS (
+               SELECT 1 FROM dbo.projeto pr WHERE pr.NomeProjeto = p.Projeto
+           )`
+      );
+
+      const projetosValidos = projetoResult.recordset.map(item => item.Projeto);
+
+      // Formatar os dados antes de enviar a resposta
+      const formattedResult = result.recordset.map(item => {
+          const formattedData = formatDate(item.Data);  // Formata a data para DD-MM-YYYY
+          const formattedHoraInicial = formatTime(item.horaInicial);  // Formata a hora inicial
+          const formattedHoraFinal = formatTime(item.horaFinal);  // Formata a hora final
+
+          return {
+              Nome: item.Nome,
+              Data: formattedData, // Data formatada para DD-MM-YYYY
+              horaInicial: formattedHoraInicial, // Hora inicial formatada
+              horaFinal: formattedHoraFinal, // Hora final formatada
+              Projeto: item.Projeto,
+              Anexo: item.Anexo,
+              ProjetoValido: projetosValidos.includes(item.Projeto) // Indica se o projeto é válido
+          };
+      });
+
+      // Retornar os dados formatados para o cliente
+      res.status(200).json(formattedResult);
+  } catch (err) {
+      console.error('Erro ao acessar o banco de dados:', err);
+      res.status(500).json({ error: 'Erro ao acessar o banco de dados' });
+  } finally {
+      // Fechar a conexão com o banco de dados
+      sql.close();
+  }
+});
+
+app.post('/api/registrar-ponto-atividade', async (req, res) => {
+    try {
+        const { Nome, Data, horaInicial, horaFinal, Projeto, Anexo, ProjetoValido } = req.body;
+
+        // Validar campos obrigatórios
+        if (!Nome || !Data || !horaInicial || !horaFinal || !Projeto || !Anexo || ProjetoValido === undefined) {
+            return res.status(400).json({ error: 'Todos os campos são obrigatórios.' });
+        }
+
+        // Validar se o projeto é válido
+        if (!ProjetoValido) {
+            return res.status(400).json({ error: 'Projeto inválido. Não é possível registrar a atividade.' });
+        }
+
+        // Validar e formatar a hora
+        const horaInicialFormatada = formatTimeForSQL(horaInicial);
+        const horaFinalFormatada = formatTimeForSQL(horaFinal);
+
+        // Validar e formatar a data
+        const dataRegex = /^\d{2}-\d{2}-\d{4}$/; // Formato DD-MM-YYYY
+        if (!dataRegex.test(Data)) {
+            return res.status(400).json({ error: 'Formato de data inválido. Use DD-MM-YYYY.' });
+        }
+
+        const [day, month, year] = Data.split('-');
+        const dataFormatada = new Date(`${year}-${month}-${day}`);
+        if (isNaN(dataFormatada.getTime())) {
+            return res.status(400).json({ error: 'Data inválida. Verifique os valores fornecidos.' });
+        }
+
+        // Conectar ao banco de dados
+        const pool = await sql.connect(dbConfig);
+
+        // Verificar se o projeto existe no banco (opcional, pois ProjetoValido já é fornecido)
+        const projetoResult = await pool.request()
+            .input('NomeProjeto', sql.VarChar, Projeto)
+            .query(`SELECT ID FROM dbo.projeto WHERE NomeProjeto = @NomeProjeto`);
+
+        if (projetoResult.recordset.length === 0) {
+            return res.status(400).json({ error: 'Projeto não encontrado no banco de dados.' });
+        }
+
+        const ProjetoID = projetoResult.recordset[0].ID;
+
+        // Processar a lista de anexos
+        const anexosArray = Anexo.split(',').map(anexo => anexo.trim()); // Separar e limpar os valores
+
+        // Inserir no banco de dados
+        await pool.request()
+            .input('QualAtividade', sql.VarChar, `Registro de Ponto =${Nome}`)
+            .input('DataDaAtividade', sql.Date, dataFormatada)
+            .input('QuantasPessoas', sql.Int, 1)
+            .input('HoraInicial', sql.Time, new Date(`1970-01-01T${horaInicialFormatada}Z`))
+            .input('HoraFinal', sql.Time, new Date(`1970-01-01T${horaFinalFormatada}Z`))
+            .input('Responsavel', sql.VarChar, Nome)
+            .input('ProjetoID', sql.Int, ProjetoID)
+            .input('Anexo', sql.VarChar, anexosArray.join(';')) // Armazenar os anexos como string separada por ';'
+            .query(`
+                INSERT INTO dbo.registroDeAtividades 
+                (QualAtividade, DataDaAtividade, QuantasPessoas, HoraInicial, HoraFinal, Responsavel, ProjetoID, Anexo)
+                VALUES 
+                (@QualAtividade, @DataDaAtividade, @QuantasPessoas, @HoraInicial, @HoraFinal, @Responsavel, @ProjetoID, @Anexo)
+            `);
+
+        res.status(201).json({ message: 'Atividade registrada com sucesso.' });
+    } catch (err) {
+        console.error('Erro ao registrar atividade:', err.message);
+        res.status(500).json({ error: 'Erro ao registrar atividade.' });
+    }
+});
+
 
 // Iniciar o servidor e a conexão com o banco
 connectToDatabase().then(() => {
