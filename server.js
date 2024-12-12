@@ -5,7 +5,6 @@ const multer = require('multer');
 const path = require('path');
 const { startDirectoryListener } = require('./controllers/pontoFotosController');
 const fs = require('fs');
-const {router: bullBoardRouter} =require('bull-board');
 require('dotenv').config();
 const cors = require('cors');
 const PDFDocument = require('pdfkit');
@@ -765,7 +764,6 @@ app.get('/api/projetos/:id/observacao', async (req, res) => {
 // Rotas
 const pontoFotosRoutes = require('./routes/pontoFotosRoutes');
 app.use('/api', pontoFotosRoutes);
-app.use('/queues', bullBoardRouter); // Rota para o painel do Bull Board
 
 
 // Iniciar listener para monitorar diretório
