@@ -213,7 +213,7 @@ watcher
       console.log('Enviando dados para a API...', fileInfo);
 
       // Chamar API POST para processar os arquivos no diretório
-      const response = await axios.post('http://localhost:4001/api/ponto_fotos', {
+      const response = await axios.post('http://pc107662:4002/api/ponto_fotos', {
         files: [fileInfo], // Envia o arquivo no corpo da requisição
       });
       
@@ -226,6 +226,19 @@ watcher
     console.error(`Erro no watcher: ${error.message}`);
   });
 console.log(`Monitorando o diretório: ${watchDirectory}`);
+
+app.post('/api/ponto_fotos', async (req, res) => {
+  const { files } = req.body;
+
+  if (!files || files.length === 0) {
+    return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+  }
+
+  // Processar os arquivos conforme necessário
+  // Aqui você pode adicionar a lógica para salvar os dados no banco de dados ou realizar outras operações
+
+  res.status(200 ).json({ message: 'Arquivos processados com sucesso.' });
+});
 
 // Rota para adicionar um novo projeto (com upload de layout)
 app.post('/projetos', (req, res) => {
@@ -325,22 +338,6 @@ app.get('/projetos', async (req, res) => {
   } catch (error) {
     console.error('Erro ao buscar projetos:', error);
     res.status(500).send({ error: 'Erro ao buscar projetos.' });
-  }
-});
-
-// Rota para obter um projeto específico
-app.get('/projetos/:id', async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const result = await sql.query`SELECT * FROM dbo.projeto WHERE ID = ${id}`;
-    if (result.recordset.length === 0) {
-      return res.status(404).json({ message: 'Projeto não encontrado.' });
-    }
-    res.status(200).json(result.recordset[0]);
-  } catch (error) {
-    console.error('Erro ao buscar projeto:', error);
-    res.status(500).send({ error: 'Erro ao buscar projeto.' });
   }
 });
 
@@ -584,7 +581,7 @@ app.get('/registroDeAtividades/projeto/:projetoId', async (req, res) => {
       const filename = path.basename(Anexo);
 
       // Gera a URL do arquivo
-      const fileUrl = `http://pc107662:4001/uploads/registroDeAtividades/${ano}/${mes}/${dia}/${QualAtividade}/${filename}`;
+      const fileUrl = `http://pc107662:4002/uploads/registroDeAtividades/${ano}/${mes}/${dia}/${QualAtividade}/${filename}`;
 
       // Retorna o registro com a URL do arquivo anexada
       return { ...attachment, fileUrl };
@@ -598,7 +595,10 @@ app.get('/registroDeAtividades/projeto/:projetoId', async (req, res) => {
   }
 });
 
-// Rota para obter anexos com base no ID da atividade
+// Servindo arquivos estáticos da rede
+app.use('/uploads', express.static('\\\\mao-s039\\c$\\rec_facial\\registros'));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 app.get('/registroDeAtividades/anexos/:id', async (req, res) => {
   const { id } = req.params;
 
@@ -629,34 +629,43 @@ app.get('/registroDeAtividades/anexos/:id', async (req, res) => {
         return activity; // Retorna a atividade sem a URL se campos necessários estiverem ausentes
       }
 
-      // Converte a DataDaAtividade para criar o caminho do arquivo
-      const dataAtividade = new Date(DataDaAtividade);
-      if (isNaN(dataAtividade)) {
-        console.error('DataDaAtividade inválida:', DataDaAtividade);
-        return activity; // Retorna a atividade sem a URL se a data for inválida
-      }
-
-      const ano = dataAtividade.getFullYear();
-      const mes = String(dataAtividade.getMonth() + 1).padStart(2, '0');
-      const dia = String(dataAtividade.getDate()).padStart(2, '0');
-
-      // Verifica se o campo Anexo é uma string de array JSON e converte para um array real
+      // O caminho do arquivo é diretamente retirado da coluna Anexo
       let anexos = [];
-      try {
-        anexos = JSON.parse(Anexo); // Converte a string de array JSON para um array real
-      } catch (error) {
-        console.error('Erro ao converter Anexo para array:', error);
+
+      // Verifica se o campo Anexo é uma string ou um JSON
+      if (typeof Anexo === 'string') {
+        // Se for uma string simples, podemos tratá-la diretamente
+        anexos = [Anexo];
+      } else {
+        try {
+          anexos = JSON.parse(Anexo); // Converte a string de array JSON para um array real
+        } catch (error) {
+          console.error('Erro ao converter Anexo para array:', error);
+        }
       }
 
       // Gera as URLs para cada anexo
       const anexosComUrl = anexos.map((filePath) => {
-        const filename = path.basename(filePath.trim());
+        const trimmedFilePath = filePath.trim();
 
-        // Corrige o caminho absoluto do arquivo para um caminho relativo
-        const fileUrl = `http://pc107662:4001/uploads/registroDeAtividades/${ano}/${mes}/${dia}/${QualAtividade}/${filename}`;
+        // Verifica se o filePath não está vazio ou nulo
+        if (!trimmedFilePath) {
+          return null; // Ignora caso o caminho esteja vazio
+        }
+
+        const filename = path.basename(trimmedFilePath);
+
+        // Remove a parte do caminho absoluto, mantendo apenas a parte após a pasta "uploads"
+        let relativePath = trimmedFilePath.replace(/^.*\\uploads/, '/uploads');  // Remove a parte antes de "/uploads"
+
+        // Corrige o caminho da URL, considerando o formato que você mencionou
+        let fileUrl = `http://pc107662:4002${relativePath.replace(/\\/g, '/')}`;
+
+        // Remove caracteres indesejados como \"] no final da URL
+        fileUrl = fileUrl.replace(/\\?"]$/, '');
 
         return { nome: filename, url: fileUrl };
-      });
+      }).filter(Boolean); // Remove valores null ou inválidos
 
       // Retorna o registro com os anexos e URLs gerados
       return { anexos: anexosComUrl };
@@ -666,9 +675,10 @@ app.get('/registroDeAtividades/anexos/:id', async (req, res) => {
     res.status(200).json(activityWithAttachments[0]); // Como temos um único ID, retornamos o primeiro item
   } catch (error) {
     console.error('Erro ao buscar anexos:', error.message);
-    res.status(500).json({ error: 'Erro ao buscar anexos.' });
+    res.status(500).json({ error: 'Erro ao buscar anexos.', details: error.message });
   }
 });
+
 
 app.get('/gerar-pdf/:id', async (req, res) => {
   const { id } = req.params;
