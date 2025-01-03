@@ -1,17 +1,18 @@
-const router = require('./routes/pontoFotosRoutes');
+// Importações
 const express = require('express');
 const sql = require('mssql');
 const multer = require('multer');
 const path = require('path');
-const { startDirectoryListener } = require('./controllers/pontoFotosController');
 const fs = require('fs');
+const chokidar = require('chokidar');
+const axios = require('axios');
 require('dotenv').config();
 const cors = require('cors');
 const PDFDocument = require('pdfkit');
 
 
 const app = express();
-const port = process.env.PORT || 4001;
+const port = process.env.PORT;
 
 // Configuração do CORS
 app.use(cors({
@@ -150,6 +151,81 @@ minutes = minutes.padStart(2, '0');
 
 return `${hours}:${minutes}:${seconds}`;
 }
+// Obter o tempo de inicialização do servidor
+const serverStartTime = Date.now();
+// Diretório para monitorar
+const watchDirectory = '\\\\mao-s039\\c$\\rec_facial\\registros';
+
+// Função para verificar se o arquivo é novo
+function isNewFile(filePath) {
+  try {
+    const stats = fs.statSync(filePath);
+    return stats.birthtimeMs >= serverStartTime; // Verifica se o arquivo foi criado após o início do servidor
+  } catch (error) {
+    console.error('Erro ao verificar o arquivo:', error);
+    return false;
+  }
+}
+// Função para coletar as informações do arquivo
+const getFileInfo = (filePath) => {
+  const fileName = path.basename(filePath); // Nome do arquivo
+  const match = fileName.match(/^(.+?)_(.+?)_(\d{4})\.(\d{2})\.(\d{2})\.(\d{2})\.(\d{2})\.(\d{2})\.jpg$/);
+  if (!match) return null; // Se o arquivo não corresponde ao padrão, retorna null
+
+  let nome = match[1]; // Nome
+  let restante = match[2]; // Sobrenome e projeto
+
+  // Identificar o último underscore para separar projeto
+  const lastUnderscoreIndex = restante.lastIndexOf('_');
+  if (lastUnderscoreIndex !== -1) {
+    nome = `${nome} ${restante.slice(0, lastUnderscoreIndex).replace(/_/g, ' ')}`; // Adicionar sobrenome ao nome
+    restante = restante.slice(lastUnderscoreIndex + 1); // O resto é o projeto
+  }
+
+  const projeto = restante; // Nome do projeto
+  const data = `${match[3]}-${match[4]}-${match[5]}`; // Data formatada
+  const hora = `${match[6]}:${match[7]}:${match[8]}`; // Hora formatada
+
+  return { nome, projeto, data, hora, anexo: fileName }; // Retorna as informações extraídas
+};
+
+// Configuração do watcher
+const watcher = chokidar.watch(watchDirectory, {
+  persistent: true,
+  ignoreInitial: true, // Ignorar os arquivos existentes ao iniciar o watcher
+  usePolling: true, // Necessário para diretórios de rede
+  interval: 1000, // Verifica alterações a cada segundo
+});
+
+// Monitorar adição de novos arquivos
+watcher
+  .on('add', async (filePath) => {
+    console.log(`Novo arquivo detectado: ${filePath}`);
+
+    try {
+      // Coletar informações do arquivo
+      const fileInfo = getFileInfo(filePath);
+      if (!fileInfo) {
+        console.log(`Arquivo fora do padrão: ${filePath}`);
+        return; // Ignora arquivos fora do padrão
+      }
+
+      console.log('Enviando dados para a API...', fileInfo);
+
+      // Chamar API POST para processar os arquivos no diretório
+      const response = await axios.post('http://localhost:4001/api/ponto_fotos', {
+        files: [fileInfo], // Envia o arquivo no corpo da requisição
+      });
+      
+      console.log('Resposta da API POST:', response.data);
+    } catch (error) {
+      console.error(`Erro ao chamar API POST: ${error.message}`);
+    }
+  })
+  .on('error', (error) => {
+    console.error(`Erro no watcher: ${error.message}`);
+  });
+console.log(`Monitorando o diretório: ${watchDirectory}`);
 
 // Rota para adicionar um novo projeto (com upload de layout)
 app.post('/projetos', (req, res) => {
@@ -760,14 +836,6 @@ app.get('/api/projetos/:id/observacao', async (req, res) => {
     res.status(500).json({ error: 'Erro ao buscar observação do projeto' });
   }
 });
-
-// Rotas
-const pontoFotosRoutes = require('./routes/pontoFotosRoutes');
-app.use('/api', pontoFotosRoutes);
-
-
-// Iniciar listener para monitorar diretório
-startDirectoryListener();
 
 // Iniciar o servidor e a conexão com o banco
 connectToDatabase().then(() => {
