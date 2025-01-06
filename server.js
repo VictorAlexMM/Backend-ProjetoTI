@@ -358,25 +358,23 @@ app.post('/registroDeAtividades', (req, res) => {
           return cb(new Error('DataDaAtividade inválida.'));
         }
 
-        // Formatação de ano, mês e dia
-        const ano = data.getFullYear();
-        const mes = String(data.getMonth() + 1).padStart(2, '0');
-        const dia = String(data.getDate()).padStart(2, '0');
+        // Formatação de ano, mês e dia com base na data UTC
+        const ano = data.getUTCFullYear();
+        const mes = String(data.getUTCMonth() + 1).padStart(2, '0');
+        const dia = String(data.getUTCDate()).padStart(2, '0');
 
         // Caminho onde os arquivos serão armazenados
-        const dir = path.join(__dirname, 'uploads', 'registroDeAtividades', ano.toString(), mes, dia, QualAtividade);
+        const dir = path.join(__dirname, 'uploads', 'registroDeAtividades', ano.toString(), mes, dia);
 
         // Criação do diretório de forma recursiva, caso não exista
-        if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
-        }
+        fs.mkdirSync(dir, { recursive: true });
 
         // Define o diretório de destino para o upload
         cb(null, dir);
       },
       filename: (req, file, cb) => {
-        // Define o nome do arquivo com timestamp para garantir nome único
-        cb(null, `${Date.now()}-${file.originalname}`);
+        // Define o nome do arquivo com o nome original
+        cb(null, file.originalname);
       },
     }),
     fileFilter: (req, file, cb) => {
@@ -395,7 +393,7 @@ app.post('/registroDeAtividades', (req, res) => {
   // Processa o upload
   upload(req, res, async (err) => {
     if (err) {
-      // Se ocorrer erro durante o upload (ex: tipo de arquivo inválido)
+      // Se ocorrer erro durante o upload (ex: tipo de arquivo inválido ou pasta não existente)
       console.error('Erro no upload de arquivo:', err.message);
       return res.status(500).json({ error: err.message });
     }
@@ -410,8 +408,8 @@ app.post('/registroDeAtividades', (req, res) => {
       });
     }
 
-    // Mapeia os arquivos para o caminho final onde foram salvos
-    const anexos = req.files.map((file) => path.join(file.destination, file.filename));
+    // Mapeia os arquivos para o nome final onde foram salvos, apenas o nome do arquivo
+    const anexos = req.files.map((file) => file.originalname).join(', ');  // Armazena como uma string separada por vírgulas
 
     try {
       // Define valores nulos para HoraInicial e HoraFinal, se não forem fornecidos
@@ -432,7 +430,7 @@ app.post('/registroDeAtividades', (req, res) => {
         ${Responsavel}, 
         ${CriadoEm || null}, 
         ${ProjetoID || null},
-        ${JSON.stringify(anexos)} -- Armazena como JSON os caminhos dos anexos
+        ${anexos} -- Armazena os nomes dos anexos como uma string simples
       )`;
 
       const idCriado = result.recordset[0]?.ID;
@@ -568,20 +566,21 @@ app.get('/registroDeAtividades/projeto/:projetoId', async (req, res) => {
         return attachment;
       }
 
-      // Converte a DataDaAtividade para criar o caminho do arquivo
+      // Converte a DataDaAtividade para criar o caminho do arquivo usando UTC
       const dataAtividade = new Date(DataDaAtividade);
       if (isNaN(dataAtividade)) {
         console.error('DataDaAtividade inválida:', DataDaAtividade);
         return attachment; // Retorna o registro sem a URL se a data for inválida
       }
 
-      const ano = dataAtividade.getFullYear();
-      const mes = String(dataAtividade.getMonth() + 1).padStart(2, '0');
-      const dia = String(dataAtividade.getDate()).padStart(2, '0');
+      // Extrai ano, mês e dia no contexto UTC
+      const ano = dataAtividade.getUTCFullYear();
+      const mes = String(dataAtividade.getUTCMonth() + 1).padStart(2, '0'); // Mês corrigido (1-indexado)
+      const dia = String(dataAtividade.getUTCDate()).padStart(2, '0'); // Dia no contexto UTC
       const filename = path.basename(Anexo);
 
       // Gera a URL do arquivo
-      const fileUrl = `http://pc107662:4002/uploads/registroDeAtividades/${ano}/${mes}/${dia}/${QualAtividade}/${filename}`;
+      const fileUrl = `http://pc107662:4002/uploads/registroDeAtividades/${ano}/${mes}/${dia}/${filename}`;
 
       // Retorna o registro com a URL do arquivo anexada
       return { ...attachment, fileUrl };
@@ -594,6 +593,7 @@ app.get('/registroDeAtividades/projeto/:projetoId', async (req, res) => {
     res.status(500).json({ error: 'Erro ao buscar registros de atividades.' });
   }
 });
+
 
 // Servindo arquivos estáticos da rede
 app.use('/uploads', express.static('\\\\mao-s039\\c$\\rec_facial\\registros'));
