@@ -547,8 +547,8 @@ app.get('/registroDeAtividades/projeto/:projetoId', async (req, res) => {
 
     // Consulta ao banco de dados para buscar pelo ProjetoID ou ID específico
     const result = await sql.query`
-      SELECT a.*
-      FROM dbo.registroDeAtividades a
+      SELECT a.* 
+      FROM dbo.registroDeAtividades a 
       WHERE a.ID = ${projetoId} OR a.ProjetoID = ${projetoId}`;
 
     // Verifica se houve algum registro encontrado
@@ -577,13 +577,16 @@ app.get('/registroDeAtividades/projeto/:projetoId', async (req, res) => {
       const ano = dataAtividade.getUTCFullYear();
       const mes = String(dataAtividade.getUTCMonth() + 1).padStart(2, '0'); // Mês corrigido (1-indexado)
       const dia = String(dataAtividade.getUTCDate()).padStart(2, '0'); // Dia no contexto UTC
-      const filename = path.basename(Anexo);
 
-      // Gera a URL do arquivo
-      const fileUrl = `http://pc107662:4002/uploads/registroDeAtividades/${ano}/${mes}/${dia}/${filename}`;
+      // Divide os anexos em um array (caso haja mais de um)
+      const anexos = Anexo.split(',').map((anexo) => {
+        const filename = path.basename(anexo.trim()); // Remove espaços extras e extrai o nome do arquivo
+        // Gera a URL do arquivo
+        return `http://pc107662:4002/uploads/registroDeAtividades/${ano}/${mes}/${dia}/${filename}`;
+      });
 
-      // Retorna o registro com a URL do arquivo anexada
-      return { ...attachment, fileUrl };
+      // Retorna o registro com os anexos separados
+      return { ...attachment, fileUrls: anexos };
     });
 
     // Retorna os registros com as URLs geradas
@@ -593,6 +596,7 @@ app.get('/registroDeAtividades/projeto/:projetoId', async (req, res) => {
     res.status(500).json({ error: 'Erro ao buscar registros de atividades.' });
   }
 });
+
 
 
 // Servindo arquivos estáticos da rede
