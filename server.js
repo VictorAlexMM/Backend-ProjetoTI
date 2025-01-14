@@ -444,6 +444,36 @@ app.post('/registroDeAtividades', (req, res) => {
   });
 });
 
+// Rota para atualizar Cargo e ValorOperador
+app.put("/registroDeAtividades/valor/homem", async (req, res) => {
+  const { ID, Cargo, ValorOperador } = req.body;
+
+  if (!ID || !Cargo || ValorOperador === undefined) {
+    return res.status(400).send("ID, Cargo e ValorOperador são obrigatórios.");
+  }
+
+  try {
+    // Conexão com o banco de dados
+    const pool = await sql.connect(dbConfig);
+
+    // Query para atualizar os campos no banco
+    await pool.request()
+      .input("ID", sql.Int, ID)
+      .input("Cargo", sql.NVarChar, Cargo)
+      .input("ValorOperador", sql.Decimal(18, 2), ValorOperador)
+      .query(`
+        UPDATE dbo.registroDeAtividades
+        SET Cargo = @Cargo, ValorOperador = @ValorOperador
+        WHERE ID = @ID
+      `);
+
+    res.status(200).send("Atividade atualizada com sucesso.");
+  } catch (error) {
+    console.error("Erro ao atualizar o banco:", error);
+    res.status(500).send("Erro ao atualizar a atividade.");
+  }
+});
+
 
 // Rota para obter arquivos do projeto com base na data de criação (Prazo)
 app.get('/uploads/projeto/:ano/:mes/:dia/:NomeProjeto/:filename', async (req, res) => {
@@ -596,7 +626,6 @@ app.get('/registroDeAtividades/projeto/:projetoId', async (req, res) => {
     res.status(500).json({ error: 'Erro ao buscar registros de atividades.' });
   }
 });
-
 
 
 // Servindo arquivos estáticos da rede
