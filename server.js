@@ -605,8 +605,7 @@ app.get(
   }
 );
 
-app.get(
-  "/uploads/registroDeAtividades/:ano/:mes/:dia/:qualAtividade/:filename",
+app.get("/uploads/registroDeAtividades/:ano/:mes/:dia/:qualAtividade/:filename",
   async (req, res) => {
     const { ano, mes, dia, qualAtividade, filename } = req.params;
 
