@@ -29,7 +29,7 @@ const dbConfig = {
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   server: process.env.DB_SERVER,
-  database: process.env.DB_DATABASE,
+  database: process.env.DB_NAME,
   options: {
     encrypt: false,
     trustServerCertificate: true,
@@ -504,34 +504,37 @@ app.post("/registroDeAtividades", (req, res) => {
 });
 
 // Rota para atualizar Cargo e ValorOperador
-("/registroDeAtividades/valor/homem", async (req, res) => {
-  const { ID, Cargo, ValorOperador } = req.body;
+"/registroDeAtividades/valor/homem",
+  async (req, res) => {
+    const { ID, Cargo, ValorOperador } = req.body;
 
-  if (!ID || !Cargo || ValorOperador === undefined) {
-    return res.status(400).send("ID, Cargo e ValorOperador são obrigatórios.");
-  }
+    if (!ID || !Cargo || ValorOperador === undefined) {
+      return res
+        .status(400)
+        .send("ID, Cargo e ValorOperador são obrigatórios.");
+    }
 
-  try {
-    // Conexão com o banco de dados
-    const pool = await sql.connect(dbConfig);
+    try {
+      // Conexão com o banco de dados
+      const pool = await sql.connect(dbConfig);
 
-    // Query para atualizar os campos no banco
-    await pool
-      .request()
-      .input("ID", sql.Int, ID)
-      .input("Cargo", sql.NVarChar, Cargo)
-      .input("ValorOperador", sql.Decimal(18, 2), ValorOperador).query(`
+      // Query para atualizar os campos no banco
+      await pool
+        .request()
+        .input("ID", sql.Int, ID)
+        .input("Cargo", sql.NVarChar, Cargo)
+        .input("ValorOperador", sql.Decimal(18, 2), ValorOperador).query(`
         UPDATE dbo.registroDeAtividades
         SET Cargo = @Cargo, ValorOperador = @ValorOperador
         WHERE ID = @ID
       `);
 
-    res.status(200).send("Atividade atualizada com sucesso.");
-  } catch (error) {
-    console.error("Erro ao atualizar o banco:", error);
-    res.status(500).send("Erro ao atualizar a atividade.");
-  }
-});
+      res.status(200).send("Atividade atualizada com sucesso.");
+    } catch (error) {
+      console.error("Erro ao atualizar o banco:", error);
+      res.status(500).send("Erro ao atualizar a atividade.");
+    }
+  };
 
 // Rota para obter arquivos do projeto com base na data de criação (Prazo)
 app.get(
@@ -605,7 +608,8 @@ app.get(
   }
 );
 
-app.get("/uploads/registroDeAtividades/:ano/:mes/:dia/:qualAtividade/:filename",
+app.get(
+  "/uploads/registroDeAtividades/:ano/:mes/:dia/:qualAtividade/:filename",
   async (req, res) => {
     const { ano, mes, dia, qualAtividade, filename } = req.params;
 
@@ -1002,7 +1006,7 @@ app.get("/api/projetos/status/:id", async (req, res) => {
 });
 
 // Endpoint para atualizar status e observação
-app.put('/api/projetos/:id', async (req, res) => {
+app.put("/api/projetos/:id", async (req, res) => {
   const { id } = req.params;
   const { status, observacao } = req.body;
 
@@ -1010,20 +1014,20 @@ app.put('/api/projetos/:id', async (req, res) => {
     const pool = await poolPromise; // Certifique-se de usar o pool criado acima
 
     // Atualiza o status e a observação no banco de dados
-    await pool.request()
-      .input('id', sql.Int, id)
-      .input('status', sql.NVarChar, status)
-      .input('observacao', sql.NVarChar, observacao)
-      .query(`
+    await pool
+      .request()
+      .input("id", sql.Int, id)
+      .input("status", sql.NVarChar, status)
+      .input("observacao", sql.NVarChar, observacao).query(`
         UPDATE projeto
         SET Status = @status, observacao = @observacao
         WHERE id = @id
       `);
 
-    res.status(200).json({ message: 'Projeto atualizado com sucesso' });
+    res.status(200).json({ message: "Projeto atualizado com sucesso" });
   } catch (error) {
-    console.error('Erro ao atualizar status:', error);
-    res.status(500).json({ error: 'Erro ao atualizar status do projeto' });
+    console.error("Erro ao atualizar status:", error);
+    res.status(500).json({ error: "Erro ao atualizar status do projeto" });
   }
 });
 
